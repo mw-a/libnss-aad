@@ -169,7 +169,7 @@ static json_t *get_oauth2_token(const char *client_id,
 {
     CURL *curl_handle;
     CURLcode res;
-    json_t *token_data, *token;
+    json_t *token_data = NULL, *token;
     json_error_t error;
     struct response resp;
 
@@ -203,8 +203,8 @@ static json_t *get_oauth2_token(const char *client_id,
 
     /* check for errors */
     if (res != CURLE_OK) {
-        fprintf(stderr, "curl_easy_perform() failed: %s\n",
-                curl_easy_strerror(res));
+        fprintf(stderr, "curl_easy_perform() %s failed: %s\n",
+                endpoint, curl_easy_strerror(res));
     } else {
         token_data = json_loads(resp.data, 0, &error);
 
@@ -266,8 +266,8 @@ static int verify_user(json_t * auth_token, const char *domain,
 
 
     if (res != CURLE_OK) {
-        fprintf(stderr, "curl_easy_perform() failed: %s\n",
-                curl_easy_strerror(res));
+        fprintf(stderr, "curl_easy_perform() %s failed: %s\n",
+                endpoint, curl_easy_strerror(res));
     } else {
         user_data = json_loads(resp.data, 0, &error);
 
@@ -408,6 +408,10 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
     curl_global_init(CURL_GLOBAL_ALL);
 
     token = get_oauth2_token(client_id, client_secret, domain, debug);
+    if (!token) {
+        fprintf(stderr, "failed to acquire token\n");
+        return NSS_STATUS_UNAVAIL;
+    }
 
     ret = verify_user(token, domain, name, debug);
 
