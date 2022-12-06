@@ -9,9 +9,9 @@ SRC_DIR = .
 PREFIX = /usr/local
 LIB_DIR = ${PREFIX}/lib
 
-all: libnss_aad
+all: libnss_aad.so.2
 
-libnss_aad:
+libnss_aad.so.2:	libnss_aad.c sds/sds.c
 	${CC} ${CFLAGS} ${LDFLAGS} -I${SRC_DIR} -fPIC -fno-stack-protector -Wall \
 		-shared -Wl,--export-dynamic -o libnss_aad.so.2 -Wl,-soname,libnss_aad.so.2 \
 		libnss_aad.c sds/sds.c -lcrypt -lcurl -ljansson -lm -lsodium
@@ -26,7 +26,7 @@ debug:
 reformat:
 	@VERSION_CONTROL=none $(INDENT) libnss_aad.c
 
-install: libnss_aad
+install: libnss_aad.so.2
 	${INSTALL_DATA} libnss_aad.so.2 ${LIB_DIR}
 
 clean: 
