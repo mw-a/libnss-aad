@@ -22,7 +22,7 @@
 #define MIN_GID 1000
 #define MIN_UID 1000
 #define PASSWD_FILE "/etc/passwd"
-#define RESOURCE_ID "00000002-0000-0000-c000-000000000000"
+#define RESOURCE_ID "https%3A%2F%2Fgraph.microsoft.com%2F.default"
 #define SHADOW_FILE "/etc/shadow"
 #define SHELL "/bin/sh"
 #define USER_AGENT "libnss_aad/1.0"
@@ -179,13 +179,13 @@ static json_t *get_oauth2_token(const char *client_id,
     /* https://login.microsoftonline.com/<domain>/oauth2/token */
     sds endpoint = sdsnew("https://login.microsoftonline.com/");
     endpoint = sdscat(endpoint, domain);
-    endpoint = sdscat(endpoint, "/oauth2/token");
+    endpoint = sdscat(endpoint, "/oauth2/v2.0/token");
 
     sds post_body = sdsnew("grant_type=client_credentials&client_secret=");
     post_body = sdscat(post_body, client_secret);
     post_body = sdscat(post_body, "&client_id=");
     post_body = sdscat(post_body, client_id);
-    post_body = sdscat(post_body, "&resource=");
+    post_body = sdscat(post_body, "&scope=");
     post_body = sdscat(post_body, RESOURCE_ID);
 
     curl_handle = curl_easy_init();
@@ -231,7 +231,7 @@ static int verify_user(json_t * auth_token, const char *domain,
     json_t *user_data;
     json_error_t error;
     sds auth_header = sdsnew("Authorization: Bearer ");
-    sds endpoint = sdsnew("https://graph.windows.net/");
+    sds endpoint = sdsnew("https://graph.microsoft.com/v1.0/users/");
     struct response resp;
     struct curl_slist *headers = NULL;
     const char *user_field;
@@ -242,13 +242,10 @@ static int verify_user(json_t * auth_token, const char *domain,
     auth_header = sdscat(auth_header, json_string_value(auth_token));
     headers = curl_slist_append(headers, auth_header);
 
-    /* https://graph.windows.net/<domain>/users/<username>@<domain>?api-version=1.6 */
-    endpoint = sdscat(endpoint, domain);
-    endpoint = sdscat(endpoint, "/users/");
+    /* https://graph.microsoft.com/v1.0/users/<username>@<domain> */
     endpoint = sdscat(endpoint, name);
     endpoint = sdscat(endpoint, "@");
     endpoint = sdscat(endpoint, domain);
-    endpoint = sdscat(endpoint, "?api-version=1.6");
 
     curl_handle = curl_easy_init();
     curl_easy_setopt(curl_handle, CURLOPT_URL, endpoint);
