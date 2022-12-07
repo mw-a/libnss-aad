@@ -228,10 +228,13 @@ static int verify_user(json_t * auth_token, const char *domain,
 {
     CURL *curl_handle;
     CURLcode res;
-    json_t *user_data;
+    json_t *user_data = NULL, *app_data = NULL, *ext_id_json;
     json_error_t error;
     sds auth_header = sdsnew("Authorization: Bearer ");
     sds endpoint = sdsnew("https://graph.microsoft.com/v1.0/users/");
+    sds endpoint_apps = "https://graph.microsoft.com/v1.0/applications?$select=appId&$filter=displayname%20eq%20'Tenant%20Schema%20Extension%20App'";
+    const char *ext_id_uuid;
+    sds ext_id = NULL;
     struct response resp;
     struct curl_slist *headers = NULL;
     const char *user_field;
@@ -242,10 +245,88 @@ static int verify_user(json_t * auth_token, const char *domain,
     auth_header = sdscat(auth_header, json_string_value(auth_token));
     headers = curl_slist_append(headers, auth_header);
 
+    curl_handle = curl_easy_init();
+    curl_easy_setopt(curl_handle, CURLOPT_URL, endpoint_apps);
+    curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION,
+                     response_callback);
+    curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *) &resp);
+    curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, USER_AGENT);
+    curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYPEER, 1L);
+
+    if (debug)
+        curl_easy_setopt(curl_handle, CURLOPT_VERBOSE, 1L);
+
+    res = curl_easy_perform(curl_handle);
+    if (res != CURLE_OK) {
+        fprintf(stderr, "curl_easy_perform() %s failed: %s\n",
+                endpoint_apps, curl_easy_strerror(res));
+        goto out;
+    }
+
+    app_data = json_loads(resp.data, 0, &error);
+    if (!app_data) {
+        fprintf(stderr, "json_loads() failed: %s\n", error.text);
+        goto out;
+    }
+
+    ext_id_json = json_object_get(app_data, "value");
+    if (json_array_size(ext_id_json) == 1)
+        ext_id_json = json_array_get(ext_id_json, 0);
+    if (ext_id_json)
+        ext_id_json = json_object_get(ext_id_json, "appId");
+    if (!ext_id_json) {
+        json_t *error_json = json_object_get(app_data, "error");
+        const char *message = "unknown error";
+
+        if (error_json)
+            error_json = json_object_get(error_json, "message");
+        if (error_json)
+            message = json_string_value(error_json);
+
+        fprintf(stderr, "schema extension app not found: %s\n", message);
+        printf(resp.data);
+        goto out;
+    }
+
+    ext_id_uuid = json_string_value(ext_id_json);
+    if (!ext_id_uuid) {
+        fprintf(stderr, "wrong data type retrieving schema extension app ID\n");
+        goto out;
+    }
+
+    curl_easy_cleanup(curl_handle);
+    free(resp.data);
+
+    int count;
+    sds *tokens = sdssplitlen(ext_id_uuid, strlen(ext_id_uuid), "-", 1, &count);
+    if (!tokens) {
+        fprintf(stderr, "out of memory splitting schema extension app ID\n");
+        goto out;
+    }
+
+    ext_id = sdsjoinsds(tokens, count, "", 0);
+    sdsfreesplitres(tokens, count);
+    json_decref(app_data);
+    app_data = NULL;
+
+    if (!ext_id_uuid) {
+        fprintf(stderr, "out of memory retrieving schema extension app ID\n");
+        goto out;
+    }
+
+    resp.data = malloc(1);
+    resp.size = 0;
+
     /* https://graph.microsoft.com/v1.0/users/<username>@<domain> */
     endpoint = sdscat(endpoint, name);
     endpoint = sdscat(endpoint, "@");
     endpoint = sdscat(endpoint, domain);
+    endpoint = sdscat(endpoint, "?$select=extension_");
+    endpoint = sdscat(endpoint, ext_id);
+    endpoint = sdscat(endpoint, "_uidNumber,extension_");
+    endpoint = sdscat(endpoint, ext_id);
+    endpoint = sdscat(endpoint, "_gidNumber");
 
     curl_handle = curl_easy_init();
     curl_easy_setopt(curl_handle, CURLOPT_URL, endpoint);
@@ -261,24 +342,29 @@ static int verify_user(json_t * auth_token, const char *domain,
 
     res = curl_easy_perform(curl_handle);
 
-
     if (res != CURLE_OK) {
         fprintf(stderr, "curl_easy_perform() %s failed: %s\n",
                 endpoint, curl_easy_strerror(res));
-    } else {
-        user_data = json_loads(resp.data, 0, &error);
-
-        if (!user_data) {
-            fprintf(stderr, "json_loads() failed: %s\n", error.text);
-            return EXIT_FAILURE;
-        }
-
-        if (json_object_get(user_data, "odata.error")) {
-            fprintf(stderr, "returned odata.error\n");
-            return EXIT_FAILURE;
-        }
+        goto out;
     }
 
+    user_data = json_loads(resp.data, 0, &error);
+    if (!user_data) {
+        fprintf(stderr, "json_loads() failed: %s\n", error.text);
+        goto out;
+    }
+
+    if (json_object_get(user_data, "odata.error")) {
+        fprintf(stderr, "returned odata.error\n");
+        goto out;
+    }
+
+    printf("resp.data: %s\n", resp.data);
+
+out:
+    json_decref(user_data);
+    sdsfree(ext_id);
+    json_decref(app_data);
     curl_easy_cleanup(curl_handle);
     curl_slist_free_all(headers);
     sdsfree(auth_header);
