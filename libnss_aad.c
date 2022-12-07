@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -26,7 +27,7 @@
 #define SHADOW_FILE "/etc/shadow"
 #define SHELL "/bin/sh"
 #define USER_AGENT "libnss_aad/1.0"
-#define USER_FIELD "mailNickname"
+#define USER_FIELD "userPrincipalName"
 
 struct charset {
     char const *const c;
@@ -223,8 +224,8 @@ static json_t *get_oauth2_token(const char *client_id,
     return (token) ? token : NULL;
 }
 
-static int verify_user(json_t * auth_token, const char *domain,
-                       const char *name, bool debug)
+static json_t *lookup_user(json_t * auth_token, const char *domain,
+        const char *name, bool debug)
 {
     CURL *curl_handle;
     CURLcode res;
@@ -234,10 +235,11 @@ static int verify_user(json_t * auth_token, const char *domain,
     sds endpoint = sdsnew("https://graph.microsoft.com/v1.0/users/");
     sds endpoint_apps = "https://graph.microsoft.com/v1.0/applications?$select=appId&$filter=displayname%20eq%20'Tenant%20Schema%20Extension%20App'";
     const char *ext_id_uuid;
-    sds ext_id = NULL;
+    sds ext_id = NULL, uidnumber_field = NULL, gidnumber_field = NULL,
+        gecos_field = NULL, homedir_field = NULL, shell_field = NULL;
+    json_t *uidnumber_json, *gidnumber_json, *gecos_json, *homedir_json, *shell_json;
     struct response resp;
     struct curl_slist *headers = NULL;
-    const char *user_field;
 
     resp.data = malloc(1);
     resp.size = 0;
@@ -285,7 +287,6 @@ static int verify_user(json_t * auth_token, const char *domain,
             message = json_string_value(error_json);
 
         fprintf(stderr, "schema extension app not found: %s\n", message);
-        printf(resp.data);
         goto out;
     }
 
@@ -318,15 +319,40 @@ static int verify_user(json_t * auth_token, const char *domain,
     resp.data = malloc(1);
     resp.size = 0;
 
+    uidnumber_field = sdsnew("extension_");
+    uidnumber_field = sdscat(uidnumber_field, ext_id);
+    uidnumber_field = sdscat(uidnumber_field, "_uidNumber");
+
+    gidnumber_field = sdsnew("extension_");
+    gidnumber_field = sdscat(gidnumber_field, ext_id);
+    gidnumber_field = sdscat(gidnumber_field, "_gidNumber");
+
+    gecos_field = sdsnew("extension_");
+    gecos_field = sdscat(gecos_field, ext_id);
+    gecos_field = sdscat(gecos_field, "_gecos");
+
+    homedir_field = sdsnew("extension_");
+    homedir_field = sdscat(homedir_field, ext_id);
+    homedir_field = sdscat(homedir_field, "_unixHomeDirectory");
+
+    shell_field = sdsnew("extension_");
+    shell_field = sdscat(shell_field, ext_id);
+    shell_field = sdscat(shell_field, "_loginShell");
+
     /* https://graph.microsoft.com/v1.0/users/<username>@<domain> */
     endpoint = sdscat(endpoint, name);
     endpoint = sdscat(endpoint, "@");
     endpoint = sdscat(endpoint, domain);
-    endpoint = sdscat(endpoint, "?$select=extension_");
-    endpoint = sdscat(endpoint, ext_id);
-    endpoint = sdscat(endpoint, "_uidNumber,extension_");
-    endpoint = sdscat(endpoint, ext_id);
-    endpoint = sdscat(endpoint, "_gidNumber");
+    endpoint = sdscat(endpoint, "?$select=displayName," USER_FIELD ",");
+    endpoint = sdscat(endpoint, uidnumber_field);
+    endpoint = sdscat(endpoint, ",");
+    endpoint = sdscat(endpoint, gidnumber_field);
+    endpoint = sdscat(endpoint, ",");
+    endpoint = sdscat(endpoint, gecos_field);
+    endpoint = sdscat(endpoint, ",");
+    endpoint = sdscat(endpoint, homedir_field);
+    endpoint = sdscat(endpoint, ",");
+    endpoint = sdscat(endpoint, shell_field);
 
     curl_handle = curl_easy_init();
     curl_easy_setopt(curl_handle, CURLOPT_URL, endpoint);
@@ -356,13 +382,37 @@ static int verify_user(json_t * auth_token, const char *domain,
 
     if (json_object_get(user_data, "odata.error")) {
         fprintf(stderr, "returned odata.error\n");
+        json_decref(user_data);
+        user_data = NULL;
         goto out;
     }
 
-    printf("resp.data: %s\n", resp.data);
+    /* link extension attributes with well-known internal names */
+    uidnumber_json = json_object_get(user_data, uidnumber_field);
+    if (uidnumber_json)
+        json_object_set(user_data, "uidNumber", uidnumber_json);
 
+    gidnumber_json = json_object_get(user_data, gidnumber_field);
+    if (gidnumber_json)
+        json_object_set(user_data, "gidNumber", gidnumber_json);
+
+    gecos_json = json_object_get(user_data, gecos_field);
+    if (gecos_json)
+        json_object_set(user_data, "gecos", gecos_json);
+
+    homedir_json = json_object_get(user_data, homedir_field);
+    if (homedir_json)
+        json_object_set(user_data, "homedir", homedir_json);
+
+    shell_json = json_object_get(user_data, shell_field);
+    if (shell_json)
+        json_object_set(user_data, "shell", shell_json);
 out:
-    json_decref(user_data);
+    sdsfree(uidnumber_field);
+    sdsfree(gidnumber_field);
+    sdsfree(gecos_field);
+    sdsfree(homedir_field);
+    sdsfree(shell_field);
     sdsfree(ext_id);
     json_decref(app_data);
     curl_easy_cleanup(curl_handle);
@@ -371,10 +421,7 @@ out:
     sdsfree(endpoint);
     free(resp.data);
 
-    user_field = json_string_value(json_object_get(user_data, USER_FIELD));
-    return (user_field
-            && strcmp(user_field,
-                      name) == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
+    return user_data;
 }
 
 static int write_entry(const char *fp, void *userp)
@@ -402,148 +449,226 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
                                     int *errnop)
 {
     bool debug = false;
-    const char *client_id, *client_secret, *domain, *shell;
-    json_t *config, *client, *shell_cfg, *token, *user_cfg;
+    const char *client_id, *client_secret, *domain, *group_name;
+    json_t *config = NULL, *debug_json, *client, *client_id_json,
+           *client_secret_json, *domain_json, *group_json, *shell_cfg, *token,
+           *user_cfg;
+    json_t *user_data = NULL, *uidnumber_json, *gidnumber_json, *gecos_json,
+           *homedir_json, *shell_json;
+    const char *gecos, *homedir, *shell;
     json_error_t error;
-    int ret = 0, user_id = MIN_UID;
-    sds home_dir = sdsnew("/home/");
-    struct group *group;
-    struct passwd *user;
+    enum nss_status ret = NSS_STATUS_NOTFOUND;
 
-    (void) (errnop);            /* unused-parameter */
+    /* permanent error */
+    *errnop = 0;
 
     config = json_load_file(CONF_FILE, 0, &error);
     if (!config) {
         fprintf(stderr, "error in config on line %d: %s\n", error.line,
                 error.text);
-        return NSS_STATUS_NOTFOUND;
+        goto out;
     }
 
-    if (json_object_get(config, "debug"))
-        if (strcmp
-            (json_string_value(json_object_get(config, "debug")),
-             "true") == 0)
-            debug = true;
+    debug_json = json_object_get(config, "debug");
+    if (debug_json && strcmp(json_string_value(debug_json), "true") == 0)
+        debug = true;
 
-    if (json_object_get(config, "client")) {
-        client = json_object_get(config, "client");
-    } else {
+    client = json_object_get(config, "client");
+    if (!client) {
         fprintf(stderr, "error with Client in JSON\n");
-        return ret;
+        goto out;
     }
 
-    if (json_object_get(client, "id")) {
-        client_id = json_string_value(json_object_get(client, "id"));
-    } else {
+    client_id_json = json_object_get(client, "id");
+    if (!client_id_json) {
         fprintf(stderr, "error with Client ID in JSON\n");
-        return ret;
+        goto out;
     }
 
-    if (json_object_get(client, "secret")) {
-        client_secret =
-            json_string_value(json_object_get(client, "secret"));
-    } else {
+    client_id = json_string_value(client_id_json);
+
+    client_secret_json = json_object_get(client, "secret");
+    if (!client_secret_json) {
         fprintf(stderr, "error with Client Secret in JSON\n");
-        return ret;
+        goto out;
     }
 
-    if (json_object_get(config, "domain")) {
-        domain = json_string_value(json_object_get(config, "domain"));
-    } else {
+    client_secret = json_string_value(client_secret_json);
+
+    domain_json = json_object_get(config, "domain");
+    if (!domain_json) {
         fprintf(stderr, "error with Domain in JSON\n");
-        return ret;
+        goto out;
     }
 
-    if (json_object_get(config, "user")) {
-        user_cfg = json_object_get(config, "user");
-    } else {
+    domain = json_string_value(domain_json);
+
+    user_cfg = json_object_get(config, "user");
+    if (!user_cfg) {
         fprintf(stderr, "error with User in JSON\n");
-        return ret;
+        goto out;
     }
 
-    user = getpwuid(user_id);
-
-    if (json_object_get(user_cfg, "group")) {
-        group =
-            getgrnam(json_string_value
-                     (json_object_get(user_cfg, "group")));
-    } else {
+    group_json = json_object_get(user_cfg, "group");
+    if (!group_json) {
         fprintf(stderr, "error with Group in JSON\n");
         return ret;
     }
 
-    if (json_object_get(user_cfg, "shell")) {
-        shell_cfg = json_object_get(user_cfg, "shell");
-    }
+    group_name = json_string_value(group_json);
 
-    shell = (shell_cfg) ? json_string_value(shell_cfg) : sdsnew(SHELL);
-    if (!shell) {
+    shell_cfg = json_object_get(user_cfg, "shell");
+    if (!shell_cfg) {
         fprintf(stderr, "error with Shell in JSON\n");
-        return ret;
-    }
-
-    home_dir = sdscat(home_dir, name);
-    if (!home_dir) {
-        fprintf(stderr, "error with HOME directory\n");
         return ret;
     }
 
     curl_global_init(CURL_GLOBAL_ALL);
 
+    /* from here on out errors are transient */
+    ret = NSS_STATUS_TRYAGAIN;
+    *errnop = EAGAIN;
+
     token = get_oauth2_token(client_id, client_secret, domain, debug);
     if (!token) {
         fprintf(stderr, "failed to acquire token\n");
-        return NSS_STATUS_UNAVAIL;
+        goto out;
     }
 
-    ret = verify_user(token, domain, name, debug);
+    user_data = lookup_user(token, domain, name, debug);
 
     curl_global_cleanup();
 
-    if (!ret) {
-        if ((p->pw_name =
-             get_static(&buffer, &buflen, strlen(name) + 1)) == NULL)
-            return NSS_STATUS_TRYAGAIN;
-
-        strcpy(p->pw_name, name);
-
-        if ((p->pw_passwd =
-             get_static(&buffer, &buflen, strlen("x") + 1)) == NULL)
-            return NSS_STATUS_TRYAGAIN;
-
-        strcpy(p->pw_passwd, "x");
-
-        while (user != NULL) {
-            user = getpwuid(++user_id);
-        }
-        p->pw_uid = user_id;
-
-        p->pw_gid = (group) ? group->gr_gid : MIN_GID;
-
-        if ((p->pw_gecos =
-             get_static(&buffer, &buflen, strlen("\0") + 1)) == NULL)
-            return NSS_STATUS_TRYAGAIN;
-
-        strcpy(p->pw_gecos, "\0");
-
-        if ((p->pw_dir =
-             get_static(&buffer, &buflen, strlen(home_dir) + 1)) == NULL)
-            return NSS_STATUS_TRYAGAIN;
-
-        strcpy(p->pw_dir, home_dir);
-
-        if ((p->pw_shell =
-             get_static(&buffer, &buflen, strlen(shell) + 1)) == NULL)
-            return NSS_STATUS_TRYAGAIN;
-
-        strcpy(p->pw_shell, shell);
-
-        write_entry(PASSWD_FILE, p);
-
-        return NSS_STATUS_SUCCESS;
+    if (!user_data) {
+        goto out;
     }
 
-    return NSS_STATUS_TRYAGAIN;
+    if ((p->pw_name =
+         get_static(&buffer, &buflen, strlen(name) + 1)) == NULL) {
+        *errnop = ERANGE;
+        goto out;
+    }
+
+    strcpy(p->pw_name, name);
+
+    if ((p->pw_passwd =
+         get_static(&buffer, &buflen, strlen("x") + 1)) == NULL) {
+        *errnop = ERANGE;
+        goto out;
+    }
+
+    strcpy(p->pw_passwd, "x");
+
+    uidnumber_json = json_object_get(user_data, "uidNumber");
+    if (!uidnumber_json) {
+        fprintf(stderr, "uid number missing");
+        goto out;
+    }
+
+    p->pw_uid = json_integer_value(uidnumber_json);
+    if (p->pw_uid == 0) {
+        fprintf(stderr, "uid number not integer");
+        goto out;
+    }
+
+    gidnumber_json = json_object_get(user_data, "gidNumber");
+    if (gidnumber_json) {
+        p->pw_gid = json_integer_value(gidnumber_json);
+        if (p->pw_gid == 0) {
+            fprintf(stderr, "gid number not integer");
+            goto out;
+        }
+    } else {
+        struct group *group = getgrnam(group_name);
+        if (!group) {
+            fprintf(stderr, "group %s not found\n", group_name);
+            goto out;
+        }
+
+        p->pw_gid = group->gr_gid;
+    }
+
+    gecos_json = json_object_get(user_data, "gecos");
+    if (!gecos_json) {
+        gecos_json = json_object_get(user_data, "displayName");
+    }
+    if (!gecos_json) {
+        fprintf(stderr, "gecos missing");
+        goto out;
+    }
+
+    gecos = json_string_value(gecos_json);
+    if (!gecos_json) {
+        fprintf(stderr, "gecos not string");
+        goto out;
+    }
+
+    if ((p->pw_gecos =
+         get_static(&buffer, &buflen, strlen(gecos) + 1)) == NULL) {
+        *errnop = ERANGE;
+        goto out;
+    }
+
+    strcpy(p->pw_gecos, gecos);
+
+    homedir_json = json_object_get(user_data, "homedir");
+    if (homedir_json) {
+        homedir = json_string_value(homedir_json);
+        if (!homedir_json) {
+            fprintf(stderr, "homedir not string");
+            goto out;
+        }
+
+        if ((p->pw_dir =
+            get_static(&buffer, &buflen, strlen(homedir) + 1)) == NULL) {
+            *errnop = ERANGE;
+            goto out;
+        }
+
+        strcpy(p->pw_dir, homedir);
+    } else {
+        if ((p->pw_dir =
+            get_static(&buffer, &buflen, strlen(name) + 6 /* /home/ */ + 1)) == NULL) {
+            *errnop = ERANGE;
+            goto out;
+        }
+
+        strcpy(p->pw_dir, "/home/");
+        strcat(p->pw_dir, name);
+    }
+
+    shell_json = json_object_get(user_data, "shell");
+    if (shell_json) {
+        shell = json_string_value(shell_json);
+        if (!shell_json) {
+            fprintf(stderr, "shell not string");
+            goto out;
+        }
+    } else {
+        if (shell_cfg) {
+            shell = json_string_value(shell_cfg);
+        } else {
+            shell = SHELL;
+        }
+    }
+
+    if ((p->pw_shell =
+         get_static(&buffer, &buflen, strlen(shell) + 1)) == NULL) {
+        *errnop = ERANGE;
+        goto out;
+    }
+
+    strcpy(p->pw_shell, shell);
+
+    //write_entry(PASSWD_FILE, p);
+    ret = NSS_STATUS_SUCCESS;
+    *errnop = 0;
+
+out:
+    json_decref(config);
+    json_decref(user_data);
+
+    return ret;
 }
 
 enum nss_status _nss_aad_getspnam_r(const char *name, struct spwd *s,
@@ -571,7 +696,7 @@ enum nss_status _nss_aad_getspnam_r(const char *name, struct spwd *s,
 
     strcpy(s->sp_pwdp, passwd);
 
-    write_entry(SHADOW_FILE, s);
+    //write_entry(SHADOW_FILE, s);
 
     s->sp_lstchg = 13571;
     s->sp_min = 0;
