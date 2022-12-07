@@ -10,9 +10,9 @@
 #include <shadow.h>
 #include <sodium.h>
 #include <stdbool.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include <sys/errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -48,7 +48,7 @@ static size_t response_callback(void *contents, size_t size, size_t nmemb,
     char *ptr = realloc(resp->data, resp->size + realsize + 1);
     if (ptr == NULL) {
         /* out of memory! */
-        printf("not enough memory (realloc returned NULL)\n");
+        syslog(LOG_ERR, "not enough memory (realloc returned NULL)");
         return 0;
     }
 
@@ -78,7 +78,7 @@ static char *get_static(char **buffer, size_t *buflen, int len)
 static char *generate_passwd(void)
 {
     if (sodium_init() < 0) {
-        fprintf(stderr, "libsodium could not be initialized\n");
+        syslog(LOG_ERR, "libsodium could not be initialized");
         return NULL;
     }
 
@@ -109,7 +109,7 @@ static char *generate_passwd(void)
     char *const chars = malloc(chars_l + 1);
 
     if (chars == NULL) {
-        fprintf(stderr, "failed to allocate memory for string\n");
+        syslog(LOG_ERR, "failed to allocate memory for string");
         return NULL;
     }
 
@@ -120,7 +120,7 @@ static char *generate_passwd(void)
     char *passwd = (char *) malloc((length + 1) * sizeof(char));
 
     if (passwd == NULL) {
-        fprintf(stderr, "failed to allocate memory for string\n");
+        syslog(LOG_ERR, "failed to allocate memory for string");
         return NULL;
     }
 
@@ -149,12 +149,12 @@ static char *generate_passwd(void)
     fd = open("/dev/urandom", O_RDONLY);
 
     if (fd < 0) {
-        printf("Can't open /dev/urandom\n");
+        syslog(LOG_ERR, "Can't open /dev/urandom\n");
         return NULL;
     }
 
     if (read(fd, entropy, sizeof(entropy)) != sizeof(entropy)) {
-        printf("Not enough entropy\n");
+        syslog(LOG_ERR, "Not enough entropy\n");
         return NULL;
     }
 
@@ -204,13 +204,13 @@ static json_t *get_oauth2_token(const char *client_id,
 
     /* check for errors */
     if (res != CURLE_OK) {
-        fprintf(stderr, "curl_easy_perform() %s failed: %s\n",
+        syslog(LOG_ERR, "curl_easy_perform() %s failed: %s",
                 endpoint, curl_easy_strerror(res));
     } else {
         token_data = json_loads(resp.data, 0, &error);
 
         if (!token_data) {
-            fprintf(stderr, "json_loads() failed: %s\n", error.text);
+            syslog(LOG_ERR, "json_loads() failed: %s", error.text);
             return NULL;
         }
     }
@@ -261,14 +261,14 @@ static json_t *lookup_user(json_t * auth_token, const char *domain,
 
     res = curl_easy_perform(curl_handle);
     if (res != CURLE_OK) {
-        fprintf(stderr, "curl_easy_perform() %s failed: %s\n",
+        syslog(LOG_ERR, "curl_easy_perform() %s failed: %s",
                 endpoint_apps, curl_easy_strerror(res));
         goto out;
     }
 
     app_data = json_loads(resp.data, 0, &error);
     if (!app_data) {
-        fprintf(stderr, "json_loads() failed: %s\n", error.text);
+        syslog(LOG_ERR, "json_loads() failed: %s", error.text);
         goto out;
     }
 
@@ -286,13 +286,13 @@ static json_t *lookup_user(json_t * auth_token, const char *domain,
         if (error_json)
             message = json_string_value(error_json);
 
-        fprintf(stderr, "schema extension app not found: %s\n", message);
+        syslog(LOG_ERR, "schema extension app not found: %s", message);
         goto out;
     }
 
     ext_id_uuid = json_string_value(ext_id_json);
     if (!ext_id_uuid) {
-        fprintf(stderr, "wrong data type retrieving schema extension app ID\n");
+        syslog(LOG_ERR, "wrong data type retrieving schema extension app ID");
         goto out;
     }
 
@@ -302,7 +302,7 @@ static json_t *lookup_user(json_t * auth_token, const char *domain,
     int count;
     sds *tokens = sdssplitlen(ext_id_uuid, strlen(ext_id_uuid), "-", 1, &count);
     if (!tokens) {
-        fprintf(stderr, "out of memory splitting schema extension app ID\n");
+        syslog(LOG_ERR, "out of memory splitting schema extension app ID");
         goto out;
     }
 
@@ -312,7 +312,7 @@ static json_t *lookup_user(json_t * auth_token, const char *domain,
     app_data = NULL;
 
     if (!ext_id_uuid) {
-        fprintf(stderr, "out of memory retrieving schema extension app ID\n");
+        syslog(LOG_ERR, "out of memory retrieving schema extension app ID");
         goto out;
     }
 
@@ -369,19 +369,19 @@ static json_t *lookup_user(json_t * auth_token, const char *domain,
     res = curl_easy_perform(curl_handle);
 
     if (res != CURLE_OK) {
-        fprintf(stderr, "curl_easy_perform() %s failed: %s\n",
+        syslog(LOG_ERR, "curl_easy_perform() %s failed: %s",
                 endpoint, curl_easy_strerror(res));
         goto out;
     }
 
     user_data = json_loads(resp.data, 0, &error);
     if (!user_data) {
-        fprintf(stderr, "json_loads() failed: %s\n", error.text);
+        syslog(LOG_ERR, "json_loads() failed: %s", error.text);
         goto out;
     }
 
     if (json_object_get(user_data, "odata.error")) {
-        fprintf(stderr, "returned odata.error\n");
+        syslog(LOG_ERR, "returned odata.error");
         json_decref(user_data);
         user_data = NULL;
         goto out;
@@ -464,7 +464,7 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
 
     config = json_load_file(CONF_FILE, 0, &error);
     if (!config) {
-        fprintf(stderr, "error in config on line %d: %s\n", error.line,
+        syslog(LOG_ERR, "error in config on line %d: %s", error.line,
                 error.text);
         goto out;
     }
@@ -475,13 +475,13 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
 
     client = json_object_get(config, "client");
     if (!client) {
-        fprintf(stderr, "error with Client in JSON\n");
+        syslog(LOG_ERR, "error with Client in JSON");
         goto out;
     }
 
     client_id_json = json_object_get(client, "id");
     if (!client_id_json) {
-        fprintf(stderr, "error with Client ID in JSON\n");
+        syslog(LOG_ERR, "error with Client ID in JSON");
         goto out;
     }
 
@@ -489,7 +489,7 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
 
     client_secret_json = json_object_get(client, "secret");
     if (!client_secret_json) {
-        fprintf(stderr, "error with Client Secret in JSON\n");
+        syslog(LOG_ERR, "error with Client Secret in JSON");
         goto out;
     }
 
@@ -497,7 +497,7 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
 
     domain_json = json_object_get(config, "domain");
     if (!domain_json) {
-        fprintf(stderr, "error with Domain in JSON\n");
+        syslog(LOG_ERR, "error with Domain in JSON");
         goto out;
     }
 
@@ -505,13 +505,13 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
 
     user_cfg = json_object_get(config, "user");
     if (!user_cfg) {
-        fprintf(stderr, "error with User in JSON\n");
+        syslog(LOG_ERR, "error with User in JSON");
         goto out;
     }
 
     group_json = json_object_get(user_cfg, "group");
     if (!group_json) {
-        fprintf(stderr, "error with Group in JSON\n");
+        syslog(LOG_ERR, "error with Group in JSON");
         return ret;
     }
 
@@ -519,7 +519,7 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
 
     shell_cfg = json_object_get(user_cfg, "shell");
     if (!shell_cfg) {
-        fprintf(stderr, "error with Shell in JSON\n");
+        syslog(LOG_ERR, "error with Shell in JSON");
         return ret;
     }
 
@@ -531,7 +531,7 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
 
     token = get_oauth2_token(client_id, client_secret, domain, debug);
     if (!token) {
-        fprintf(stderr, "failed to acquire token\n");
+        syslog(LOG_ERR, "failed to acquire token");
         goto out;
     }
 
@@ -561,13 +561,13 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
 
     uidnumber_json = json_object_get(user_data, "uidNumber");
     if (!uidnumber_json) {
-        fprintf(stderr, "uid number missing");
+        syslog(LOG_ERR, "uid number missing");
         goto out;
     }
 
     p->pw_uid = json_integer_value(uidnumber_json);
     if (p->pw_uid == 0) {
-        fprintf(stderr, "uid number not integer");
+        syslog(LOG_ERR, "uid number not integer");
         goto out;
     }
 
@@ -575,13 +575,13 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
     if (gidnumber_json) {
         p->pw_gid = json_integer_value(gidnumber_json);
         if (p->pw_gid == 0) {
-            fprintf(stderr, "gid number not integer");
+            syslog(LOG_ERR, "gid number not integer");
             goto out;
         }
     } else {
         struct group *group = getgrnam(group_name);
         if (!group) {
-            fprintf(stderr, "group %s not found\n", group_name);
+            syslog(LOG_ERR, "group %s not found", group_name);
             goto out;
         }
 
@@ -593,13 +593,13 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
         gecos_json = json_object_get(user_data, "displayName");
     }
     if (!gecos_json) {
-        fprintf(stderr, "gecos missing");
+        syslog(LOG_ERR, "gecos missing");
         goto out;
     }
 
     gecos = json_string_value(gecos_json);
     if (!gecos_json) {
-        fprintf(stderr, "gecos not string");
+        syslog(LOG_ERR, "gecos not string");
         goto out;
     }
 
@@ -615,7 +615,7 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
     if (homedir_json) {
         homedir = json_string_value(homedir_json);
         if (!homedir_json) {
-            fprintf(stderr, "homedir not string");
+            syslog(LOG_ERR, "homedir not string");
             goto out;
         }
 
@@ -641,7 +641,7 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
     if (shell_json) {
         shell = json_string_value(shell_json);
         if (!shell_json) {
-            fprintf(stderr, "shell not string");
+            syslog(LOG_ERR, "shell not string");
             goto out;
         }
     } else {
