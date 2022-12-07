@@ -164,6 +164,29 @@ static char *generate_passwd(void)
                  crypt_gensalt("$2a$", 12, entropy, sizeof(entropy)));
 }
 
+static int curl_log(CURL *handle, curl_infotype type, char *data, size_t size,
+        void *userptr) {
+    char *text;
+    (void)handle;
+
+    if (type != CURLINFO_TEXT)
+        return 0;
+
+    text = malloc(17 /* libnss_aad curl:  */ + size + 1 /* nul */);
+    if (text == NULL) {
+        syslog(LOG_CRIT, "error allocating memory in curl debug function");
+        return CURLE_OK;
+    }
+
+    strcpy(text, "libnss_add curl: ");
+    memcpy(text + 17, data, size);
+    text[6 + size] = '\0';
+
+    syslog(LOG_DEBUG, text);
+    free(text);
+    return CURLE_OK;
+}
+
 static json_t *get_oauth2_token(const char *client_id,
                                 const char *client_secret,
                                 const char *domain, bool debug)
@@ -197,8 +220,10 @@ static json_t *get_oauth2_token(const char *client_id,
     curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *) &resp);
     curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, USER_AGENT);
 
-    if (debug)
+    if (debug) {
         curl_easy_setopt(curl_handle, CURLOPT_VERBOSE, 1L);
+        curl_easy_setopt(curl_handle, CURLOPT_DEBUGFUNCTION, curl_log);
+    }
 
     res = curl_easy_perform(curl_handle);
 
@@ -256,8 +281,10 @@ static json_t *lookup_user(json_t * auth_token, const char *domain,
     curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, USER_AGENT);
     curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYPEER, 1L);
 
-    if (debug)
+    if (debug) {
         curl_easy_setopt(curl_handle, CURLOPT_VERBOSE, 1L);
+        curl_easy_setopt(curl_handle, CURLOPT_DEBUGFUNCTION, curl_log);
+    }
 
     res = curl_easy_perform(curl_handle);
     if (res != CURLE_OK) {
@@ -363,8 +390,10 @@ static json_t *lookup_user(json_t * auth_token, const char *domain,
     curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, USER_AGENT);
     curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYPEER, 1L);
 
-    if (debug)
+    if (debug) {
         curl_easy_setopt(curl_handle, CURLOPT_VERBOSE, 1L);
+        curl_easy_setopt(curl_handle, CURLOPT_DEBUGFUNCTION, curl_log);
+    }
 
     res = curl_easy_perform(curl_handle);
 
