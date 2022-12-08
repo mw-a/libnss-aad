@@ -723,26 +723,28 @@ enum nss_status _nss_aad_getspnam_r(const char *name, struct spwd *s,
                                     char *buffer, size_t buflen,
                                     int *errnop)
 {
-    (void) (errnop);            /* unused-parameter */
-
     /* If out of memory */
     if ((s->sp_namp =
          get_static(&buffer, &buflen, strlen(name) + 1)) == NULL) {
+        *errnop = ERANGE;
         return NSS_STATUS_TRYAGAIN;
     }
 
     strcpy(s->sp_namp, name);
 
     if ((s->sp_pwdp =
-         get_static(&buffer, &buflen, MAX_PASSWD_LENGTH + 1)) == NULL) {
+         get_static(&buffer, &buflen, strlen("*") + 1)) == NULL) {
+        *errnop = ERANGE;
         return NSS_STATUS_TRYAGAIN;
     }
 
+    /*
     char *passwd = generate_passwd();
     if (passwd == NULL)
         return NSS_STATUS_TRYAGAIN;
+    */
 
-    strcpy(s->sp_pwdp, passwd);
+    strcpy(s->sp_pwdp, "*");
 
     //write_entry(SHADOW_FILE, s);
 
