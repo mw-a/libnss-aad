@@ -189,7 +189,7 @@ static int curl_log(CURL *handle, curl_infotype type, char *data, size_t size,
 
 static json_t *get_oauth2_token(const char *client_id,
                                 const char *client_secret,
-                                const char *domain, bool debug)
+                                const char *tenant, bool debug)
 {
     CURL *curl_handle;
     CURLcode res;
@@ -200,9 +200,9 @@ static json_t *get_oauth2_token(const char *client_id,
     resp.data = malloc(1);
     resp.size = 0;
 
-    /* https://login.microsoftonline.com/<domain>/oauth2/token */
+    /* https://login.microsoftonline.com/<tenant>/oauth2/token */
     sds endpoint = sdsnew("https://login.microsoftonline.com/");
-    endpoint = sdscat(endpoint, domain);
+    endpoint = sdscat(endpoint, tenant);
     endpoint = sdscat(endpoint, "/oauth2/v2.0/token");
 
     sds post_body = sdsnew("grant_type=client_credentials&client_secret=");
@@ -249,8 +249,7 @@ static json_t *get_oauth2_token(const char *client_id,
     return (token) ? token : NULL;
 }
 
-static json_t *lookup_user(json_t * auth_token, const char *domain,
-        const char *name, bool debug)
+static json_t *lookup_user(json_t * auth_token, const char *name, bool debug)
 {
     CURL *curl_handle;
     CURLcode res;
@@ -366,10 +365,8 @@ static json_t *lookup_user(json_t * auth_token, const char *domain,
     shell_field = sdscat(shell_field, ext_id);
     shell_field = sdscat(shell_field, "_loginShell");
 
-    /* https://graph.microsoft.com/v1.0/users/<username>@<domain> */
+    /* https://graph.microsoft.com/v1.0/users/<usernamePrincipal> */
     endpoint = sdscat(endpoint, name);
-    endpoint = sdscat(endpoint, "@");
-    endpoint = sdscat(endpoint, domain);
     endpoint = sdscat(endpoint, "?$select=displayName," USER_FIELD ",");
     endpoint = sdscat(endpoint, uidnumber_field);
     endpoint = sdscat(endpoint, ",");
@@ -486,10 +483,11 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
     const char *client_id, *client_secret, *domain, *group_name;
     json_t *config = NULL, *debug_json, *client, *client_id_json,
            *client_secret_json, *domain_json, *group_json, *shell_cfg, *token,
-           *user_cfg;
+           *user_cfg, *tenant_json;
     json_t *user_data = NULL, *uidnumber_json, *gidnumber_json, *gecos_json,
            *homedir_json, *shell_json;
-    const char *gecos, *homedir, *shell;
+    const char *gecos, *homedir, *shell, *tenant;
+    sds upn = NULL;
     json_error_t error;
     enum nss_status ret = NSS_STATUS_NOTFOUND;
 
@@ -537,6 +535,14 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
 
     domain = json_string_value(domain_json);
 
+    tenant_json = json_object_get(config, "tenant");
+    if (!tenant_json) {
+        syslog(LOG_ERR, "error with tenant in JSON");
+        goto out;
+    }
+
+    tenant = json_string_value(tenant_json);
+
     user_cfg = json_object_get(config, "user");
     if (!user_cfg) {
         syslog(LOG_ERR, "error with User in JSON");
@@ -563,13 +569,20 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
     ret = NSS_STATUS_TRYAGAIN;
     *errnop = EAGAIN;
 
-    token = get_oauth2_token(client_id, client_secret, domain, debug);
+    token = get_oauth2_token(client_id, client_secret, tenant, debug);
     if (!token) {
         syslog(LOG_ERR, "failed to acquire token");
         goto out;
     }
 
-    user_data = lookup_user(token, domain, name, debug);
+    upn = sdsnew(name);
+    if (!strchr(upn, '@')) {
+        /* add default domain if none given */
+        upn = sdscat(upn, "@");
+        upn = sdscat(upn, domain);
+    }
+
+    user_data = lookup_user(token, upn, debug);
 
     curl_global_cleanup();
 
@@ -578,12 +591,12 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
     }
 
     if ((p->pw_name =
-         get_static(&buffer, &buflen, strlen(name) + 1)) == NULL) {
+         get_static(&buffer, &buflen, strlen(upn) + 1)) == NULL) {
         *errnop = ERANGE;
         goto out;
     }
 
-    strcpy(p->pw_name, name);
+    strcpy(p->pw_name, upn);
 
     if ((p->pw_passwd =
          get_static(&buffer, &buflen, strlen("x") + 1)) == NULL) {
@@ -662,13 +675,13 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
         strcpy(p->pw_dir, homedir);
     } else {
         if ((p->pw_dir =
-            get_static(&buffer, &buflen, strlen(name) + 6 /* /home/ */ + 1)) == NULL) {
+            get_static(&buffer, &buflen, strlen(upn) + 6 /* /home/ */ + 1)) == NULL) {
             *errnop = ERANGE;
             goto out;
         }
 
         strcpy(p->pw_dir, "/home/");
-        strcat(p->pw_dir, name);
+        strcat(p->pw_dir, upn);
     }
 
     shell_json = json_object_get(user_data, "shell");
@@ -701,6 +714,7 @@ enum nss_status _nss_aad_getpwnam_r(const char *name, struct passwd *p,
 out:
     json_decref(config);
     json_decref(user_data);
+    sdsfree(upn);
 
     return ret;
 }
