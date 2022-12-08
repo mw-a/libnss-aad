@@ -409,21 +409,26 @@ static json_t *lookup_user(json_t * auth_token, const char *domain,
         goto out;
     }
 
-    if (json_object_get(user_data, "odata.error")) {
-        syslog(LOG_ERR, "returned odata.error");
+    /* link extension attributes with well-known internal names */
+    uidnumber_json = json_object_get(user_data, uidnumber_field);
+    gidnumber_json = json_object_get(user_data, gidnumber_field);
+    if (uidnumber_json && gidnumber_json) {
+        json_object_set(user_data, "uidNumber", uidnumber_json);
+        json_object_set(user_data, "gidNumber", gidnumber_json);
+    } else {
+        json_t *error_json = json_object_get(app_data, "error");
+        const char *message = "unknown error";
+
+        if (error_json)
+            error_json = json_object_get(error_json, "message");
+        if (error_json)
+            message = json_string_value(error_json);
+
+        syslog(LOG_ERR, "error retrieving user data: %s", message);
         json_decref(user_data);
         user_data = NULL;
         goto out;
     }
-
-    /* link extension attributes with well-known internal names */
-    uidnumber_json = json_object_get(user_data, uidnumber_field);
-    if (uidnumber_json)
-        json_object_set(user_data, "uidNumber", uidnumber_json);
-
-    gidnumber_json = json_object_get(user_data, gidnumber_field);
-    if (gidnumber_json)
-        json_object_set(user_data, "gidNumber", gidnumber_json);
 
     gecos_json = json_object_get(user_data, gecos_field);
     if (gecos_json)
