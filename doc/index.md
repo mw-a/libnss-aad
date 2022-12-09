@@ -36,25 +36,21 @@ sudo make install
 
 - Next click "Register", down at the bottom.
 
-- From the "Overview" page, under "Manage", select "Authentication".
-
-  - For "Supported account types":
-
-    - Select `Accounts in this organizational directory only (Organization Name)`.
-
-- Next, click "Save", back up near the top.
-
 - From the "Overview" page, under "Manage", select "API permissions".
 
   - Delete any existing permissions (The delegated permission, `Microsoft Graph (1)`, `User.Read` seems to be added by default).
 
-  **NOTE: This module makes use of the `Windows Azure Active Directory` API, not the `Microsoft Graph` API** (pam_aad - [#8](https://github.com/CyberNinjas/pam_aad/issues/8), deprecation notice - [#2](https://github.com/CyberNinjas/libnss_aad/issues/2)).
-
-  - Select "Add a permission", then under "Supported legacy APIs", choose `Azure Active Directory Graph`.
+  - Select "Add a permission", then under "Select an API", "Microsoft APIs", "Commonly used Microsoft APIs", choose `Microsoft Graph`.
 
     - Choose "Application permissions".
 
-    - Under "Select permissions", choose `Directory.Read.All`.
+    - Under "Select permissions", choose `Application.Read.All` and `User.Read.All`.
+
+    - This allows the module to determine the AppId of the `Tenant Schema
+      Extension App` for use in extension attribute names as well as the values
+      of these attributes of all users using its own credentials acquired using the
+      Client Credential Flow.
+
 
 2) NSS:
 
@@ -68,6 +64,7 @@ sudo make install
     "id": "{{client_id}}",
     "secret": "{{client_secret}}"
   },
+  "tenant": "{{tenant}}",
   "domain": "{{domain}}",
   "user": {
     "group": "users",
